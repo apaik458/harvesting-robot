@@ -7,6 +7,11 @@ Arm::Arm(const char * port)
     dxl_id1_(1),
     dxl_id2_(2),
     dxl_id3_(3),
+    motor1_current_position_(2048),
+    motor2_current_position_(2048),
+    motor3_current_position_(2048),
+    current_x_(0.0),
+    current_y_(-50.0),
     dxl_error_(0),
     dxl_comm_result_(COMM_TX_FAIL),
     dxl_addparam_result_(false),
@@ -58,6 +63,10 @@ void Arm::connect() {
     std::cout << "Dynamixel#3 has been successfully connected \n";
   }
 
+  std::tuple<int, int, int> positions = read();
+  motor1_current_position_ = std::get<0>(positions);
+  motor2_current_position_ = std::get<1>(positions);
+  motor3_current_position_ = std::get<2>(positions);
 }
 
 std::tuple<int, int, int> Arm::read() {
@@ -126,6 +135,17 @@ void Arm::write(int target_position1, int target_position2, int target_position3
   } while (abs(target_position1 - present_position1) > 10 || abs(target_position2 - present_position2) > 10 || abs(target_position3 - present_position3) > 10);
 }
 
+void Arm::write(std::string command, float x, float y) {
+  if (command == "cartesian") {
+    std::tuple<int, int, int> joint_commands = calculateInverseKinematics(x, y);
+    std::cout << "Calculated joint positions: " << std::get<0>(joint_commands) << ", " << std::get<1>(joint_commands) << ", " << std::get<2>(joint_commands) << std::endl;
+    // write(std::get<0>(joint_commands), std::get<1>(joint_commands), std::get<2>(joint_commands));
+  } else {
+    std::cout << "Unknown command: " << command << std::endl;
+  }
+  return;
+}
+
 
 
 
@@ -157,4 +177,20 @@ std::tuple<int, int, int> Arm::calculateSpeeds(int target_position1, int target_
     int speed3 = (dist3 * max_velocity) / max_dist;
 
     return std::make_tuple(speed1, speed2, speed3);
+}
+
+std::tuple<int, int, int> Arm::calculateInverseKinematics(float x, float y) {
+    // 1. Figure out the joint angles required to reach the target (x, y) position
+    float distance_from_origin = sqrt(x*x + y*y);
+
+    // Cosine rule. Answers are in radians, relative to arm origin position:
+    float elbow_angle = M_PI - (acos((link1_length_cm*link1_length_cm + link2_length_cm*link2_length_cm - distance_from_origin*distance_from_origin) / (2*link1_length_cm*link2_length_cm)));
+    float shoulder_angle = -1*((acos((link1_length_cm*link1_length_cm + distance_from_origin*distance_from_origin - link2_length_cm*link2_length_cm) / (2*link1_length_cm*distance_from_origin))) - atan2(x, -y));
+    std::cout << "Calculated angles (radians): Shoulder: " << shoulder_angle << ", Elbow: " << elbow_angle << std::endl;
+    // 2. Convert the angles to motor positions (0-4095)
+    int motor1_position = 2048 + int((shoulder_angle / (2.0*M_PI)) * 4095);
+    int motor2_position = 2048 + int((elbow_angle / (2.0*M_PI)) * 4095);
+    int motor3_position = 2048;
+
+    return std::make_tuple(motor1_position, motor2_position, motor3_position);
 }
