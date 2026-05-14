@@ -22,11 +22,11 @@ public:
     void connect();
     std::tuple<int, int, int> read();
     void write(int target_position1, int target_position2, int target_position3);
-    void write(std::string command, float x, float y);
+    void write(std::string command, double x, double y);
 
     //Helper functions
     std::tuple<int, int, int> calculateSpeeds(int target_position1, int target_position2, int target_position3);
-    std::tuple<int, int, int> calculateInverseKinematics(float x, float y);
+    std::tuple<int, int, int> calculateInverseKinematics(double x, double y);
 
 private:
     const char * port_;

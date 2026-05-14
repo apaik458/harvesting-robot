@@ -135,7 +135,7 @@ void Arm::write(int target_position1, int target_position2, int target_position3
   } while (abs(target_position1 - present_position1) > 10 || abs(target_position2 - present_position2) > 10 || abs(target_position3 - present_position3) > 10);
 }
 
-void Arm::write(std::string command, float x, float y) {
+void Arm::write(std::string command, double x, double y) {
   if (command == "cartesian") {
     std::tuple<int, int, int> joint_commands = calculateInverseKinematics(x, y);
     if (std::get<0>(joint_commands) == -1) {
@@ -182,53 +182,58 @@ std::tuple<int, int, int> Arm::calculateSpeeds(int target_position1, int target_
     return std::make_tuple(speed1, speed2, speed3);
 }
 
-std::tuple<int, int, int> Arm::calculateInverseKinematics(float x, float y) {
-    float distance_from_origin = sqrt(x*x + y*y);
+std::tuple<int, int, int> Arm::calculateInverseKinematics(double x, double y) {
+    double distance_from_origin = sqrt(x*x + y*y);
 
     // Elbow angle (motor 2): apply cosine rule
-    float elbow_angle = M_PI - acos((link1_length_cm*link1_length_cm + link2_length_cm*link2_length_cm - distance_from_origin*distance_from_origin) / (2 * link1_length_cm * link2_length_cm));
+    double elbow_angle = M_PI - acos((link1_length_cm*link1_length_cm + link2_length_cm*link2_length_cm - distance_from_origin*distance_from_origin) / (2 * link1_length_cm * link2_length_cm));
     if (x < 0) {
         elbow_angle = -elbow_angle; // Ensures CW elbow rotation if target is in the left half plane
     }
 
     // Shoulder angle (motor 1):
     // Step 1: first finding elbow joint coordinate - this logic required a long hand calculation
-    float K = -link1_length_cm*link1_length_cm - x*x - y*y + link2_length_cm*link2_length_cm;
+    double K = -link1_length_cm*link1_length_cm - x*x - y*y + link2_length_cm*link2_length_cm;
 
-    float a = 4*x*x+4*y*y;
-    float b = 4*y*K;
-    float c = K*K - 4*x*x*link1_length_cm*link1_length_cm;
+    std::cout << "K value: " << K << std::endl;
 
-    float discriminant = b*b - 4*a*c;
-    float elbow_y1 = (-b + sqrt(discriminant)) / (2*a);
-    float elbow_y2 = (-b - sqrt(discriminant)) / (2*a);
+    double a = 4*x*x+4*y*y;
+    double b = 4*y*K;
+    double c = K*K - 4*x*x*link1_length_cm*link1_length_cm;
 
-    float elbow_y = std::min(elbow_y1, elbow_y2);
+    std::cout << "Quadratic coefficients: a=" << a << ", b=" << b << ", c=" << c << std::endl;
+
+    double discriminant = b*b - 4*a*c;
+    std::cout << "Discriminant: " << discriminant << std::endl;
+    double elbow_y1 = (-b + sqrt(discriminant)) / (2*a);
+    double elbow_y2 = (-b - sqrt(discriminant)) / (2*a);
+
+    double elbow_y = std::min(elbow_y1, elbow_y2);
 
     std::cout << "Elbow Y candidates: " << elbow_y1 << ", " << elbow_y2 << std::endl;
 
-    float elbow_x_pos = sqrt(link1_length_cm*link1_length_cm - elbow_y*elbow_y);
-    float elbow_x_neg = -elbow_x_pos;
+    double elbow_x_pos = sqrt(link1_length_cm*link1_length_cm - elbow_y*elbow_y);
+    double elbow_x_neg = -elbow_x_pos;
 
     std::cout << "Elbow X candidates: " << elbow_x_pos << ", " << elbow_x_neg << std::endl;
 
-    float err_pos = pow(elbow_x_pos - x, 2) + pow(elbow_y - y, 2) - link2_length_cm*link2_length_cm;
-    float err_neg = pow(elbow_x_neg - x, 2) + pow(elbow_y - y, 2) - link2_length_cm*link2_length_cm;
+    double err_pos = pow(elbow_x_pos - x, 2) + pow(elbow_y - y, 2) - link2_length_cm*link2_length_cm;
+    double err_neg = pow(elbow_x_neg - x, 2) + pow(elbow_y - y, 2) - link2_length_cm*link2_length_cm;
 
     std::cout << "Error for positive elbow x: " << err_pos << ", Error for negative elbow x: " << err_neg << std::endl;
 
-    float elbow_x = (abs(err_pos) < abs(err_neg)) ? elbow_x_pos : elbow_x_neg;
+    double elbow_x = (abs(err_pos) < abs(err_neg)) ? elbow_x_pos : elbow_x_neg;
 
     std::cout << "Chosen elbow coordinate: (" << elbow_x << ", " << elbow_y << ")" << std::endl;
 
     // Step 2: shoulder angle can now be found using trig with the elbow joint coordinate as reference:
-    float shoulder_angle = atan2(elbow_y, elbow_x) + M_PI/2;
+    double shoulder_angle = atan2(elbow_y, elbow_x) + M_PI/2;
     if (shoulder_angle > M_PI) shoulder_angle -= 2*M_PI; // wraparound logic
     if (shoulder_angle < -M_PI) shoulder_angle += 2*M_PI;
 
     std::cout << "Calculated angles (radians): Shoulder: " << shoulder_angle << ", Elbow: " << elbow_angle << std::endl;
 
-    float wrist_angle = (x > 0) ? -1*((M_PI/2) - (shoulder_angle + elbow_angle)) : -1*((-M_PI/2) - (shoulder_angle + elbow_angle));
+    double wrist_angle = (x > 0) ? -1*((M_PI/2) - (shoulder_angle + elbow_angle)) : -1*((-M_PI/2) - (shoulder_angle + elbow_angle));
     if (x == 0) {
       wrist_angle = 0; // sits straight when at rest
     }
@@ -240,9 +245,9 @@ std::tuple<int, int, int> Arm::calculateInverseKinematics(float x, float y) {
 
     std::cout << "Calculated motor positions: " << motor1_position << ", " << motor2_position << ", " << motor3_position << std::endl;
 
-    if (motor1_position < 683 || motor1_position > 3412 ||
-        motor2_position < 683 || motor2_position > 3412 ||
-        motor3_position < 683 || motor3_position > 3412) {
+    if (motor1_position < 512 || motor1_position > 3583 ||
+        motor2_position < 512 || motor2_position > 3583 ||
+        motor3_position < 512 || motor3_position > 3583) {
           return std::make_tuple(-1, -1, -1); // Return an error code if the target position is out of bounds
     }
 
