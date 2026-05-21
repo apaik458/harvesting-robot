@@ -100,6 +100,13 @@ void Arm::write(int target_position1, int target_position2, int target_position3
   int speed1 = std::get<0>(speeds);
   int speed2 = std::get<1>(speeds);
   int speed3 = std::get<2>(speeds);
+
+  // to control motor acceleration (trapezoidal velocity profile)
+  int profile_accel = 10;
+  packetHandler->write4ByteTxRx(portHandler, dxl_id1_, profile_acceleration_address, profile_accel, &dxl_error_);
+  packetHandler->write4ByteTxRx(portHandler, dxl_id2_, profile_acceleration_address, profile_accel, &dxl_error_);
+  packetHandler->write4ByteTxRx(portHandler, dxl_id3_, profile_acceleration_address, profile_accel, &dxl_error_);
+
   packetHandler->write4ByteTxRx(portHandler, dxl_id1_, profile_velocity_address, speed1, &dxl_error_);
   packetHandler->write4ByteTxRx(portHandler, dxl_id2_, profile_velocity_address, speed2, &dxl_error_);
   packetHandler->write4ByteTxRx(portHandler, dxl_id3_, profile_velocity_address, speed3, &dxl_error_);
@@ -132,7 +139,7 @@ void Arm::write(int target_position1, int target_position2, int target_position3
     present_position2 = std::get<1>(positions);
     present_position3 = std::get<2>(positions);
     std::cout << "Current Position: " << present_position1 << ", " << present_position2 << ", " << present_position3 << std::endl;
-  } while (abs(target_position1 - present_position1) > 10 || abs(target_position2 - present_position2) > 10 || abs(target_position3 - present_position3) > 10);
+  } while (abs(target_position1 - present_position1) > 5 || abs(target_position2 - present_position2) > 5 || abs(target_position3 - present_position3) > 5);
 }
 
 void Arm::write(std::string command, double x, double y) {

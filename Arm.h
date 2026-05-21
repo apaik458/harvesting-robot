@@ -8,11 +8,12 @@
 #include <cmath>
 #include "dynamixel_sdk/dynamixel_sdk.h"
 
+#define position_p_gain_address 84
+#define profile_acceleration_address 108
 #define profile_velocity_address 112
 #define goal_position_address 116
 #define present_position_address 132
 #define data_length_4byte 4
-
 #define link1_length_cm 27.65
 #define link2_length_cm 22.35
 

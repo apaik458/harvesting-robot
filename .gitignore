@@ -3,3 +3,4 @@ build/
 *.a
 *.so
 arm_control
+arm_program
