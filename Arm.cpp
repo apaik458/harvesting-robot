@@ -10,12 +10,18 @@ Arm::Arm(const char * port)
     motor1_current_position_(2048),
     motor2_current_position_(2048),
     motor3_current_position_(2048),
+    max_velocity_(50),
+    max_acceleration_(3),
+    non_blocking_(false),
+    move_accuracy_threshold_(20),
     current_x_(0.0),
     current_y_(-50.0),
     dxl_error_(0),
     dxl_comm_result_(COMM_TX_FAIL),
     dxl_addparam_result_(false),
-    dxl_getdata_result_(false)
+    dxl_getdata_result_(false),
+    target_x_(0.0),
+    target_y_(-50.0)
 {
 }
 
@@ -91,25 +97,30 @@ std::tuple<int, int, int> Arm::read() {
   } else if (dxl_error_ != 0) {
     std::cout << packetHandler->getRxPacketError(dxl_error_) << std::endl;
   }
+  motor1_current_position_ = present_position1;
+  motor2_current_position_ = present_position2;
+  motor3_current_position_ = present_position3;
+
   return std::make_tuple(present_position1, present_position2, present_position3);
 }
 
 void Arm::write(int target_position1, int target_position2, int target_position3) {
   // Determine what speed is required for each motor to reach the target position at the same time
-  std::tuple<int, int, int> speeds = calculateSpeeds(target_position1, target_position2, target_position3);
-  int speed1 = std::get<0>(speeds);
-  int speed2 = std::get<1>(speeds);
-  int speed3 = std::get<2>(speeds);
+  std::tuple<double, double, double> speeds = calculateSpeeds(target_position1, target_position2, target_position3);
+  double speed1 = std::get<0>(speeds);
+  double speed2 = std::get<1>(speeds);
+  double speed3 = std::get<2>(speeds);
 
-  // to control motor acceleration (trapezoidal velocity profile)
-  int profile_accel = 10;
-  packetHandler->write4ByteTxRx(portHandler, dxl_id1_, profile_acceleration_address, profile_accel, &dxl_error_);
-  packetHandler->write4ByteTxRx(portHandler, dxl_id2_, profile_acceleration_address, profile_accel, &dxl_error_);
-  packetHandler->write4ByteTxRx(portHandler, dxl_id3_, profile_acceleration_address, profile_accel, &dxl_error_);
+  std::cout << "speeds: " << speed1 << ", " << speed2 << ", " << speed3 << std::endl;
 
   packetHandler->write4ByteTxRx(portHandler, dxl_id1_, profile_velocity_address, speed1, &dxl_error_);
   packetHandler->write4ByteTxRx(portHandler, dxl_id2_, profile_velocity_address, speed2, &dxl_error_);
   packetHandler->write4ByteTxRx(portHandler, dxl_id3_, profile_velocity_address, speed3, &dxl_error_);
+
+  // to control motor acceleration (for trapezoidal velocity profile)
+  packetHandler->write4ByteTxRx(portHandler, dxl_id1_, profile_acceleration_address, max_acceleration_, &dxl_error_);
+  packetHandler->write4ByteTxRx(portHandler, dxl_id2_, profile_acceleration_address, max_acceleration_, &dxl_error_);
+  packetHandler->write4ByteTxRx(portHandler, dxl_id3_, profile_acceleration_address, max_acceleration_, &dxl_error_);
 
   dxl_comm_result_ = packetHandler->write4ByteTxRx(portHandler, dxl_id1_, goal_position_address, uint32_t(target_position1), &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
@@ -132,28 +143,70 @@ void Arm::write(int target_position1, int target_position2, int target_position3
     std::cout << packetHandler->getRxPacketError(dxl_error_) << std::endl;
   }
 
-  int present_position1, present_position2, present_position3;
-  do {
-    std::tuple<int, int, int> positions = read();
-    present_position1 = std::get<0>(positions);
-    present_position2 = std::get<1>(positions);
-    present_position3 = std::get<2>(positions);
-    std::cout << "Current Position: " << present_position1 << ", " << present_position2 << ", " << present_position3 << std::endl;
-  } while (abs(target_position1 - present_position1) > 5 || abs(target_position2 - present_position2) > 5 || abs(target_position3 - present_position3) > 5);
+  if (!non_blocking_) {
+    int present_position1, present_position2, present_position3;
+    do {
+      std::tuple<int, int, int> positions = read();
+      present_position1 = std::get<0>(positions);
+      present_position2 = std::get<1>(positions);
+      present_position3 = std::get<2>(positions);
+      std::cout << "Current Position: " << present_position1 << ", " << present_position2 << ", " << present_position3 << std::endl;
+    } while (abs(target_position1 - present_position1) > move_accuracy_threshold_ || abs(target_position2 - present_position2) > move_accuracy_threshold_ || abs(target_position3 - present_position3) > move_accuracy_threshold_);
+  }
 }
 
 void Arm::write(std::string command, double x, double y) {
   if (command == "cartesian") {
-    std::tuple<int, int, int> joint_commands = calculateInverseKinematics(x, y);
-    if (std::get<0>(joint_commands) == -1) {
-      std::cout << "Target position is out of bounds for the arm." << std::endl;
-      return;
+    int steps = 2;
+    for (int i=1;i<=steps;i++) {
+      if (i == 1) {
+        target_x_ = x;
+        target_y_ = y;
+      }
+      double step_target_x = target_x_ - ((target_x_-current_x_)/steps)*(steps-i);
+      double step_target_y = target_y_ - ((target_y_-current_y_)/steps)*(steps-i);
+      std::tuple<int, int, int> joint_commands = calculateInverseKinematics(step_target_x, step_target_y);
+      if (std::get<0>(joint_commands) == -1) {
+        std::cout << "Target position is out of bounds for the arm." << std::endl;
+        return;
+      }
+      // if (!non_blocking_) {
+      //   std::tuple<int, int, int> positions = read();
+      //   int present_position1 = std::get<0>(positions);
+      //   int present_position2 = std::get<1>(positions);
+      //   int present_position3 = std::get<2>(positions);
+      //   int steps = 4;
+      //   for (int i=1;i<=steps;i++) {
+      //     write(present_position1 - (((present_position1-std::get<0>(joint_commands))/steps)*i), present_position2 - (((present_position2-std::get<1>(joint_commands))/steps)*i), present_position3 - (((present_position3-std::get<2>(joint_commands))/steps)*i));
+      //   }
+      // } else {
+      //   write(std::get<0>(joint_commands), std::get<1>(joint_commands), std::get<2>(joint_commands)); 
+      // }
+      write(std::get<0>(joint_commands), std::get<1>(joint_commands), std::get<2>(joint_commands));
+      if (i == steps) {
+        current_x_ = target_x_;
+        current_y_ = target_y_;
+      }
     } 
-    write(std::get<0>(joint_commands), std::get<1>(joint_commands), std::get<2>(joint_commands));
   } else {
     std::cout << "Unknown command: " << command << std::endl;
   }
   return;
+}
+
+void Arm::write(std::string command, double x, double y, int velocity) {
+  max_velocity_ = velocity;
+  write(command, x, y);
+}
+
+void Arm::write(std::string command, double x, double y, int velocity, int acceleration) {
+  max_velocity_ = velocity;
+  max_acceleration_ = acceleration;
+  write(command, x, y);
+}
+
+void Arm::move_non_blocking() {
+  non_blocking_ = true;
 }
 
 
@@ -163,30 +216,52 @@ void Arm::write(std::string command, double x, double y) {
 //
 //
 
-std::tuple<int, int, int> Arm::calculateSpeeds(int target_position1, int target_position2, int target_position3) {
-    int max_velocity = 50;
-
+std::tuple<double, double, double> Arm::calculateSpeeds(int target_position1, int target_position2, int target_position3) {
     std::tuple<int, int, int> positions = read();
     int present_position1 = std::get<0>(positions);
     int present_position2 = std::get<1>(positions);
     int present_position3 = std::get<2>(positions);
 
-    int dist1 = abs(target_position1 - present_position1);
-    int dist2 = abs(target_position2 - present_position2);
-    int dist3 = abs(target_position3 - present_position3);
+    double dists[3] = {
+      fabs((target_position1 - present_position1) / 4096.0),  // in units of revs
+      fabs((target_position2 - present_position2) / 4096.0),
+      fabs((target_position3 - present_position3) / 4096.0)
+    };
 
-    // 1. Find the motor with the largest distance
-    int max_dist = std::max({dist1, dist2, dist3});
+    // 1. Find out the distance threshold where velocity profile goes from triangular to trapezoidal
+    double vel_rev_min = max_velocity_ * 0.229; 
+    double acc_rev_min_squared = max_acceleration_ * 214.577; // converting to consistent units, from Dynamixel XM430 Control Table
+    
+    double acc_constant = tan((M_PI/2)-atan(acc_rev_min_squared));
+    double t_threshold = 2*(vel_rev_min*acc_constant);
+    double dist_threshold = (t_threshold * vel_rev_min)/2.0;
+
+    // 2. Find out the time that the farthest away servo takes to reach target
+    double max_dist = *std::max_element(std::begin(dists), std::end(dists));
     if (max_dist == 0) return std::make_tuple(0, 0, 0);
 
-    // 2. Back calculate speeds for other motors so they finish at the same time
-    // speed = distance / time = distance / (max_dist / max_velocity)
-    //       = (distance * max_velocity) / max_dist
-    int speed1 = (dist1 * max_velocity) / max_dist;
-    int speed2 = (dist2 * max_velocity) / max_dist;
-    int speed3 = (dist3 * max_velocity) / max_dist;
+    double t;
+    if (max_dist > dist_threshold) { // trapezoid
+      t = (2*(max_dist/vel_rev_min)+t_threshold)/2;
+    } else { // triangle
+      t = sqrt((4*max_dist)/acc_rev_min_squared);
+    }
 
-    return std::make_tuple(speed1, speed2, speed3);
+    //3. Knowing the time and distance of each movement, and which velocity profile to use, max velocities can be found
+    double vels[3];
+    double vel;
+    for (int i=0; i<3; i++) {
+      double dist = dists[i];
+      if (dist > dist_threshold) { // trapezoid
+        vel = (-t-sqrt((t*t)-(4*-acc_constant*-dist)))/(-2*acc_constant);
+      } else { // triangle
+        vel = (2*dist)/t;
+      }
+      vel = vel / 0.229; // conversion back into a usable unit
+      vels[i] = vel;
+    }
+
+    return std::make_tuple(vels[0], vels[1], vels[2]);
 }
 
 std::tuple<int, int, int> Arm::calculateInverseKinematics(double x, double y) {

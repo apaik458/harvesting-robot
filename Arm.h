@@ -16,6 +16,7 @@
 #define data_length_4byte 4
 #define link1_length_cm 27.65
 #define link2_length_cm 22.35
+#define end_effector_length 7.0
 
 class Arm {
 public:
@@ -23,11 +24,14 @@ public:
     void connect();
     std::tuple<int, int, int> read();
     void write(int target_position1, int target_position2, int target_position3);
+    void write(std::string command, double x, double y, int velocity, int acceleration);
+    void write(std::string command, double x, double y, int velocity);
     void write(std::string command, double x, double y);
 
     //Helper functions
-    std::tuple<int, int, int> calculateSpeeds(int target_position1, int target_position2, int target_position3);
+    std::tuple<double, double, double> calculateSpeeds(int target_position1, int target_position2, int target_position3);
     std::tuple<int, int, int> calculateInverseKinematics(double x, double y);
+    void move_non_blocking();
 
 private:
     const char * port_;
@@ -43,6 +47,13 @@ private:
     int motor2_current_position_;
     int motor3_current_position_;
 
+    int max_velocity_;
+    int max_acceleration_;
+
+    bool non_blocking_;
+
+    int move_accuracy_threshold_;
+
     float current_x_;
     float current_y_;
 
@@ -50,4 +61,7 @@ private:
     int dxl_comm_result_;
     bool dxl_addparam_result_;
     bool dxl_getdata_result_;
+
+    double target_x_;
+    double target_y_;
 };

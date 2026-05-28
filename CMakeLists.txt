@@ -16,7 +16,10 @@ link_directories(
 
 add_executable(arm_control main.cpp Arm.cpp Camera.cpp)
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(arm_control
     ${OpenCV_LIBS}
     dxl_x64_cpp
+    Threads::Threads
 )

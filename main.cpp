@@ -4,24 +4,32 @@
 int main() {
     Arm arm("/dev/ttyUSB0"); // Update with the correct port for your system
     arm.connect();
-
-    arm.write("cartesian", 50.0, 0.0);
-    // arm.write("cartesian", -50.0, 0.0);
-
-    // std::tuple<double, double, double> marker_position = getMarkerPosition(); // will block for 1 second while it captures camera data
-    // std::cout << "Marker Position (cm): X=" << std::get<0>(marker_position) << ", Y=" << std::get<1>(marker_position) << ", Z=" << std::get<2>(marker_position) << std::endl;
-    // if (std::get<2>(marker_position) == -1) {
-    //     std::cout << "Failed to detect marker. Exiting." << std::endl;
-    //     return 0;
-    // }
+    Camera camera;
+    camera.open(4); // using the "/dev/video4" camera stream
     
-    // float camera_offset_x = 4.0; // how far camera is offset from motor 1 output shaft
-    // float camera_offset_y = 6.7;
-    // float end_effector_length = 4.0;
-    // float write_x = std::get<2>(marker_position) + camera_offset_x - end_effector_length;
-    // float write_y = std::get<1>(marker_position) + camera_offset_y;
+    double target_x;
+    double target_y;
 
-    // arm.write("cartesian", write_x, write_y);
+    arm.write("cartesian", 0.0, -50.0, 50, 1); // Starting arm at home position
+    // arm.move_non_blocking(); // After homing is complete, want the arm movement to be quick and non-blocking for reactive target tracking
 
+    while (1) {
+        std::tuple<double, double, double> marker_position = camera.getMarkerPosition(); // will block for 250ms while it captures camera data
+        target_x = std::get<2>(marker_position); // the camera and arm coordinate systems are different; converting to the arm's x-y coordinate system
+        target_y = std::get<1>(marker_position);
+
+        std::cout << "Marker Position in Camera Coords (cm): X=" << std::get<0>(marker_position) << ", Y=" << std::get<1>(marker_position) << ", Z=" << std::get<2>(marker_position) << std::endl;
+        std::cout << "Target Arm Coords (cm): X=" << target_x << ", Y=" << target_y << std::endl;
+
+        if (target_x == -1) {
+            std::cout << "Failed to detect marker. Exiting." << std::endl;
+            continue;
+        }
+
+        target_x = target_x + camera_offset_x - end_effector_length; // accounting for how camera/end-effector are mounted
+        target_y = target_y + camera_offset_y;
+
+        arm.write("cartesian", target_x, target_y, 50, 1);
+    }
     return 0;
 }
