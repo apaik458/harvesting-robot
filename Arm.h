@@ -27,11 +27,13 @@ public:
     void write(std::string command, double x, double y, int velocity, int acceleration);
     void write(std::string command, double x, double y, int velocity);
     void write(std::string command, double x, double y);
+    void write_waypoints(int target_position1, int target_position2, int target_position3, double target_x, double target_y);
 
     //Helper functions
     std::tuple<double, double, double> calculateSpeeds(int target_position1, int target_position2, int target_position3);
     std::tuple<int, int, int> calculateInverseKinematics(double x, double y);
-    void move_non_blocking();
+    std::tuple<double, double> calculateForwardKinematics(int motor1_position, int motor2_position, int motor3_position);
+    void toggle_blocking_state(bool block);
 
 private:
     const char * port_;
@@ -62,6 +64,6 @@ private:
     bool dxl_addparam_result_;
     bool dxl_getdata_result_;
 
-    double target_x_;
-    double target_y_;
+    int waypoints_number_;
+    int large_movement_threshold_;
 };
