@@ -2,7 +2,7 @@ task: detect
 mode: train
 model: yolov8s.pt
 data: strawberry_stem_model_yolov8/data.yaml
-epochs: 1
+epochs: 100
 time: null
 patience: 100
 batch: 16

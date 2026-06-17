@@ -1,6 +1,7 @@
 #pragma once
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
+#include <librealsense2/rs.hpp>
 #include <tuple>
 #include <chrono>
 #include <iostream>
