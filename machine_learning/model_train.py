@@ -1,16 +1,19 @@
-from ultralytics import YOLO
 import os
+import sys
+import subprocess
 
 if __name__ == "__main__":
-    model = YOLO("yolov8s.pt")
-    
-    output = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_output")
-    
-    model.train(
-        data="strawberry_stem_model_yolov8/data.yaml",
-        epochs=100,
-        imgsz=640,
-        batch=16,
-        project=output,
-        exist_ok=True
-    )
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    yolov5_dir = os.path.join(script_dir, "yolov5")
+
+    subprocess.run([
+        sys.executable, "train.py",
+        "--data", "dataset/data.yaml",
+        "--weights", "yolov5m.pt",
+        "--epochs", "100",
+        "--img", "640",
+        "--batch", "16",
+        "--project", "../model_output",
+        "--name", ".",
+        "--exist-ok"
+    ], cwd=yolov5_dir)

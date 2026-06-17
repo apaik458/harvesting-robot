@@ -1,5 +1,14 @@
-from ultralytics import YOLO
+import os
+import sys
+import subprocess
 
-model = YOLO("model_output/train/weights/best.pt")
-model.export(format="onnx")
-# creates model_output/train/weights/best.onnx
+if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    yolov5_dir = os.path.join(script_dir, "yolov5")
+
+    subprocess.run([
+        sys.executable, "export.py",
+        "--weights", "../model_output/weights/best.pt",
+        "--include", "onnx",
+        "--opset", "12",
+    ], cwd=yolov5_dir)
