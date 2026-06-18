@@ -18,3 +18,5 @@ target_link_libraries(arm_control
     dxl_x64_cpp
     Threads::Threads
 )
+set(OpenCV_DIR /usr/local/lib/cmake/opencv4)
+find_package(OpenCV REQUIRED)

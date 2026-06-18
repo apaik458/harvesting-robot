@@ -1,9 +1,11 @@
 #include "Camera.h"
 
 Camera::Camera() {
-    // aruco setup
+    // aruco setup - new API
     aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_50);
-    aruco_params = cv::aruco::DetectorParameters::create();
+    aruco_params = cv::aruco::DetectorParameters();
+    aruco_detector = cv::aruco::ArucoDetector(aruco_dict, aruco_params);
+
     camera_matrix = (cv::Mat_<double>(3, 3) <<
         603.5139681293208, 0.0, 322.4871143178484,
         0.0, 606.2351953521359, 238.09114115221269,
@@ -13,7 +15,11 @@ Camera::Camera() {
         0.0006140022848452339, -0.0003950816468824019, -4.37080936712476);
 
     // load yolo onnx model
-    std::string model_path = "../machine_learning/model_output/train/weights/best.onnx";
+    char exe_path[1024];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    exe_path[len] = '\0';
+    std::string exe_dir = std::string(exe_path).substr(0, std::string(exe_path).find_last_of("/"));
+    std::string model_path = exe_dir + "/../machine_learning/model_output/weights/best.onnx";
     yolo_net = cv::dnn::readNetFromONNX(model_path);
     if (yolo_net.empty()) {
         std::cerr << "Error: could not load YOLO model from " << model_path << std::endl;
@@ -78,11 +84,11 @@ bool Camera::open(int device_id) {
                 latest_depth_frame = depth_frame;
             }
 
-            // draw aruco markers on preview
+            // draw aruco markers on preview - new API
             std::vector<std::vector<cv::Point2f>> corners;
             std::vector<int> ids;
             std::vector<std::vector<cv::Point2f>> rejected;
-            cv::aruco::detectMarkers(frame, aruco_dict, corners, ids, aruco_params, rejected);
+            aruco_detector.detectMarkers(frame, corners, ids, rejected);
             if (!ids.empty()) {
                 cv::aruco::drawDetectedMarkers(frame, corners, ids);
             }
@@ -122,12 +128,28 @@ std::tuple<double, double, double> Camera::getMarkerPosition() {
         std::vector<std::vector<cv::Point2f>> corners;
         std::vector<int> ids;
         std::vector<std::vector<cv::Point2f>> rejected;
-        cv::aruco::detectMarkers(frame, aruco_dict, corners, ids, aruco_params, rejected);
+
+        // new API - use detector object
+        aruco_detector.detectMarkers(frame, corners, ids, rejected);
+
         if (!ids.empty()) {
-            std::vector<cv::Vec3d> rvecs, tvecs;
-            cv::aruco::estimatePoseSingleMarkers(
-                corners, MARKER_SIZE_CM, camera_matrix, dist_coeffs, rvecs, tvecs
-            );
+            // new API - estimatePoseSingleMarkers is replaced
+            std::vector<cv::Vec3d> rvecs(ids.size()), tvecs(ids.size());
+            for (size_t i = 0; i < ids.size(); i++) {
+                cv::solvePnP(
+                    std::vector<cv::Point3f>{
+                        {-MARKER_SIZE_CM/2,  MARKER_SIZE_CM/2, 0},
+                        { MARKER_SIZE_CM/2,  MARKER_SIZE_CM/2, 0},
+                        { MARKER_SIZE_CM/2, -MARKER_SIZE_CM/2, 0},
+                        {-MARKER_SIZE_CM/2, -MARKER_SIZE_CM/2, 0}
+                    },
+                    corners[i],
+                    camera_matrix,
+                    dist_coeffs,
+                    rvecs[i],
+                    tvecs[i]
+                );
+            }
             result = {tvecs[0][0], -tvecs[0][1], tvecs[0][2]};
         }
     }
@@ -137,7 +159,6 @@ std::tuple<double, double, double> Camera::getMarkerPosition() {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 float Camera::getMedianDepth(const rs2::depth_frame& depth, float x1, float y1, float x2, float y2) {
-    // shrink to inner 50% of bounding box to avoid background at edges
     float shrink_x = (x2 - x1) * 0.25f;
     float shrink_y = (y2 - y1) * 0.25f;
     int inner_x1 = (int)(x1 + shrink_x);
@@ -192,21 +213,19 @@ std::vector<Detection> Camera::runYOLO(const cv::Mat& frame) {
     yolo_net.setInput(blob);
     cv::Mat output = yolo_net.forward();
 
-    // output shape: [1, 6, 8400] → reshape to [8400, 6]
-    cv::Mat output_t = output.reshape(1, output.size[2]);
-    cv::transpose(output_t, output_t);
+    // YOLOv5 output shape: [1, 25200, 7]
+    cv::Mat output_2d = output.reshape(1, output.size[1]);
 
-    for (int i = 0; i < output_t.rows; i++) {
-        float* row = output_t.ptr<float>(i);
+    for (int i = 0; i < output_2d.rows; i++) {
+        float* row = output_2d.ptr<float>(i);
 
-        float cx = row[0];
-        float cy = row[1];
-        float w  = row[2];
-        float h  = row[3];
-
-        // find best class
-        float conf_strawberry = row[4];
-        float conf_stem       = row[5];
+        float cx         = row[0];
+        float cy         = row[1];
+        float w          = row[2];
+        float h          = row[3];
+        float objectness = row[4];
+        float conf_stem        = row[5] * objectness;
+        float conf_strawberry  = row[6] * objectness;
 
         float confidence;
         int class_id;
@@ -220,7 +239,6 @@ std::vector<Detection> Camera::runYOLO(const cv::Mat& frame) {
 
         if (confidence < CONF_THRESHOLD) continue;
 
-        // scale back to frame coordinates
         Detection d;
         d.x1 = (cx - w / 2) * scale_x;
         d.y1 = (cy - h / 2) * scale_y;
@@ -263,14 +281,13 @@ std::tuple<double, double, double> Camera::getStrawberryPosition() {
         float cx = (det.x1 + det.x2) / 2;
         float cy = (det.y1 + det.y2) / 2;
 
-        // use median depth over bounding box region
         float d = getMedianDepth(depth, det.x1, det.y1, det.x2, det.y2);
         if (d < 0) continue;
 
         return deprojectToWorld(depth, cx, cy);
     }
 
-    return {-1, -1, -1};  // no strawberry found
+    return {-1, -1, -1};
 }
 
 // ─── Stem position ────────────────────────────────────────────────────────────
@@ -303,12 +320,11 @@ std::tuple<double, double, double> Camera::getStemPosition() {
         float cy = (det.y1 + det.y2) / 2;
         int region = 10;
 
-        // use small region median for thin stem
         float d = getMedianDepth(depth, cx - region, cy - region, cx + region, cy + region);
         if (d < 0) continue;
 
         return deprojectToWorld(depth, cx, cy);
     }
 
-    return {-1, -1, -1};  // no stem found
+    return {-1, -1, -1};
 }

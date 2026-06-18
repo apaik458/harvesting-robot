@@ -10,5 +10,4 @@ if __name__ == "__main__":
         sys.executable, "export.py",
         "--weights", "../model_output/weights/best.pt",
         "--include", "onnx",
-        "--opset", "12",
     ], cwd=yolov5_dir)

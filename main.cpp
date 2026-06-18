@@ -14,11 +14,11 @@ int main() {
     arm.toggle_blocking_state(true); // After homing is complete, want the arm movement to be quick and non-blocking for reactive target tracking
 
     while (1) {
-        std::tuple<double, double, double> marker_position = camera.getMarkerPosition(); // will block while it captures camera data
+        std::tuple<double, double, double> marker_position = camera.getStrawberryPosition(); // will block while it captures camera data
         target_x = std::get<2>(marker_position); // the camera and arm coordinate systems are different; converting to the arm's x-y coordinate system
         target_y = std::get<1>(marker_position);
 
-        std::cout << "Marker Position in Camera Coords (cm): X=" << std::get<0>(marker_position) << ", Y=" << std::get<1>(marker_position) << ", Z=" << std::get<2>(marker_position) << std::endl;
+        std::cout << "Target Position in Camera Coords (cm): X=" << std::get<0>(marker_position) << ", Y=" << std::get<1>(marker_position) << ", Z=" << std::get<2>(marker_position) << std::endl;
         std::cout << "Target Arm Coords (cm): X=" << target_x << ", Y=" << target_y << std::endl;
 
         if (target_x == -1) {

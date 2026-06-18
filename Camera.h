@@ -1,6 +1,6 @@
 #pragma once
 #include <opencv2/opencv.hpp>
-#include <opencv2/aruco.hpp>
+#include <opencv2/objdetect/aruco_detector.hpp>
 #include <opencv2/dnn.hpp>
 #include <librealsense2/rs.hpp>
 #include <tuple>
@@ -9,6 +9,7 @@
 #include <thread>
 #include <mutex>
 #include <vector>
+#include <unistd.h>
 
 #define camera_offset_x 6.9
 #define camera_offset_y 10.5
@@ -45,9 +46,10 @@ private:
     rs2::depth_frame latest_depth_frame{nullptr};
     std::mutex depth_mutex;
 
-    // aruco
-    cv::Ptr<cv::aruco::Dictionary> aruco_dict;
-    cv::Ptr<cv::aruco::DetectorParameters> aruco_params;
+    // aruco — new API
+    cv::aruco::Dictionary aruco_dict;
+    cv::aruco::DetectorParameters aruco_params;
+    cv::aruco::ArucoDetector aruco_detector;
     cv::Mat camera_matrix;
     cv::Mat dist_coeffs;
     const float MARKER_SIZE_CM = 3.85f;
