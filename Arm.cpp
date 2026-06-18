@@ -280,7 +280,7 @@ void Arm::write(std::string command, double x, double y, int velocity, int accel
   write(command, x, y);
 }
 
-void Arm::toggle_blocking_state(bool block) {
+void Arm::non_blocking_state(bool block) {
   non_blocking_ = block;
 }
 

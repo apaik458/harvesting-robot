@@ -33,7 +33,7 @@ public:
     std::tuple<double, double, double> calculateSpeeds(int target_position1, int target_position2, int target_position3);
     std::tuple<int, int, int> calculateInverseKinematics(double x, double y);
     std::tuple<double, double> calculateForwardKinematics(int motor1_position, int motor2_position, int motor3_position);
-    void toggle_blocking_state(bool block);
+    void non_blocking_state(bool block);
 
 private:
     const char * port_;
