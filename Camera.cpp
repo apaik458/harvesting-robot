@@ -84,7 +84,7 @@ bool Camera::open(int device_id) {
                 latest_depth_frame = depth_frame;
             }
 
-            // draw aruco markers on preview - new API
+            // draw aruco markers
             std::vector<std::vector<cv::Point2f>> corners;
             std::vector<int> ids;
             std::vector<std::vector<cv::Point2f>> rejected;
@@ -93,7 +93,26 @@ bool Camera::open(int device_id) {
                 cv::aruco::drawDetectedMarkers(frame, corners, ids);
             }
 
-            cv::imshow("Camera Preview", frame);
+            // draw latest yolo detections
+            cv::Mat display = frame.clone();
+            {
+                std::lock_guard<std::mutex> lock(detections_mutex);
+                for (auto& det : latest_detections) {
+                    cv::Scalar colour = (det.class_id == CLASS_STRAWBERRY)
+                        ? cv::Scalar(0, 0, 255)
+                        : cv::Scalar(0, 255, 0);
+                    cv::rectangle(display, cv::Point(det.x1, det.y1), cv::Point(det.x2, det.y2), colour, 2);
+                    std::string label = std::string(det.class_id == CLASS_STRAWBERRY ? "strawberry" : "stem")
+                        + " " + std::to_string((int)(det.confidence * 100)) + "%";
+                    cv::putText(display, label, cv::Point(det.x1, det.y1 - 5),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, colour, 1);
+                    float cx = (det.x1 + det.x2) / 2;
+                    float cy = (det.y1 + det.y2) / 2;
+                    cv::circle(display, cv::Point(cx, cy), 4, colour, -1);
+                }
+            }
+
+            cv::imshow("Camera Preview", display);
             cv::waitKey(1);
         }
         cv::destroyWindow("Camera Preview");
@@ -274,6 +293,10 @@ std::tuple<double, double, double> Camera::getStrawberryPosition() {
     if (frame.empty() || !depth) return {-1, -1, -1};
 
     auto detections = runYOLO(frame);
+    {
+        std::lock_guard<std::mutex> lock(detections_mutex);
+        latest_detections = detections;
+    }
 
     for (auto& det : detections) {
         if (det.class_id != CLASS_STRAWBERRY) continue;

@@ -420,9 +420,9 @@ std::tuple<int, int, int> Arm::calculateInverseKinematics(double x, double y) {
 
     std::cout << "Calculated motor positions: " << motor1_position << ", " << motor2_position << ", " << motor3_position << std::endl;
 
-    if (motor1_position < 512 || motor1_position > 3583 ||
-        motor2_position < 512 || motor2_position > 3583 ||
-        motor3_position < 512 || motor3_position > 3583) {
+    if (motor1_position < 342 || motor1_position > 3754 ||
+        motor2_position < 342 || motor2_position > 3754 ||
+        motor3_position < 342 || motor3_position > 3754) {
           return std::make_tuple(-1, -1, -1); // Return an error code if the target position is out of bounds
     }
 

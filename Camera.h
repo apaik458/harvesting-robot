@@ -61,6 +61,9 @@ private:
     const int CLASS_STRAWBERRY = 1;
     const int CLASS_STEM = 0;
 
+    std::vector<Detection> latest_detections;
+    std::mutex detections_mutex;
+
     // helpers
     std::vector<Detection> runYOLO(const cv::Mat& frame);
     float getMedianDepth(const rs2::depth_frame& depth, float x1, float y1, float x2, float y2);
