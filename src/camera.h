@@ -10,62 +10,78 @@
 #include <mutex>
 #include <vector>
 #include <unistd.h>
+#include "fault_injector.h"
 
-#define camera_offset_x 6.9
-#define camera_offset_y 10.5
+constexpr double kCameraOffsetX = 6.9;
+constexpr double kCameraOffsetY = 10.5;
 
 struct Detection {
-    float x1, y1, x2, y2;
-    int class_id;
-    float confidence;
+  float x1, y1, x2, y2;
+  int class_id;
+  float confidence;
 };
 
 class Camera {
-public:
-    Camera();
-    ~Camera();
-    bool open(int device_id = 4);
+ public:
+  Camera();
+  ~Camera();
+  bool Open(int device_id = 4);
 
-    // aruco
-    std::tuple<double, double, double> getMarkerPosition();
+  // aruco
+  std::tuple<double, double, double> GetMarkerPosition();
 
-    // strawberry/stem
-    std::tuple<double, double, double> getStrawberryPosition();
-    std::tuple<double, double, double> getStemPosition();
+  // strawberry/stem
+  std::tuple<double, double, double> GetStrawberryPosition();
+  std::tuple<double, double, double> GetStemPosition();
 
-private:
-    // shared
-    cv::Mat latest_frame;
-    std::mutex frame_mutex;
-    std::thread capture_thread;
-    bool is_open = false;
+  // --- Safety / HITL fault testing ---
+  // Injects fault scenarios at Camera's raw hardware read points (the
+  // capture thread). Pass nullptr (the default) for normal operation.
+  void SetFaultInjector(FaultInjector* injector) { fault_injector_ = injector; }
 
-    // realsense
-    rs2::pipeline rs_pipeline;
-    rs2::align align_to_color{RS2_STREAM_COLOR};
-    rs2::depth_frame latest_depth_frame{nullptr};
-    std::mutex depth_mutex;
+  bool IsConnected() const;
+  double GetFrameTimestamp() const;
+  double GetDepthValue() const;
+  bool IsDetectionValid() const;
 
-    // aruco — new API
-    cv::aruco::Dictionary aruco_dict;
-    cv::aruco::DetectorParameters aruco_params;
-    cv::aruco::ArucoDetector aruco_detector;
-    cv::Mat camera_matrix;
-    cv::Mat dist_coeffs;
-    const float MARKER_SIZE_CM = 3.85f;
+ private:
+  // shared
+  cv::Mat latest_frame_;
+  mutable std::mutex frame_mutex_;
+  std::thread capture_thread_;
+  bool is_open_ = false;
 
-    // yolo
-    cv::dnn::Net yolo_net;
-    const float CONF_THRESHOLD = 0.5f;
-    const int YOLO_INPUT_SIZE = 640;
-    const int CLASS_STRAWBERRY = 1;
-    const int CLASS_STEM = 0;
+  // realsense
+  rs2::pipeline rs_pipeline_;
+  rs2::align align_to_color_{RS2_STREAM_COLOR};
+  rs2::depth_frame latest_depth_frame_{nullptr};
+  mutable std::mutex depth_mutex_;
 
-    std::vector<Detection> latest_detections;
-    std::mutex detections_mutex;
+  // aruco — new API
+  cv::aruco::Dictionary aruco_dict_;
+  cv::aruco::DetectorParameters aruco_params_;
+  cv::aruco::ArucoDetector aruco_detector_;
+  cv::Mat camera_matrix_;
+  cv::Mat dist_coeffs_;
+  const float kMarkerSizeCm = 3.85f;
 
-    // helpers
-    std::vector<Detection> runYOLO(const cv::Mat& frame);
-    float getMedianDepth(const rs2::depth_frame& depth, float x1, float y1, float x2, float y2);
-    std::tuple<double, double, double> deprojectToWorld(const rs2::depth_frame& depth, float cx, float cy);
+  // yolo
+  cv::dnn::Net yolo_net_;
+  const float kConfThreshold = 0.5f;
+  const int kYoloInputSize = 640;
+  const int kClassStrawberry = 1;
+  const int kClassStem = 0;
+
+  std::vector<Detection> latest_detections_;
+  mutable std::mutex detections_mutex_;
+
+  // helpers
+  std::vector<Detection> RunYolo(const cv::Mat& frame);
+  float GetMedianDepth(const rs2::depth_frame& depth, float x1, float y1, float x2, float y2);
+  std::tuple<double, double, double> DeprojectToWorld(const rs2::depth_frame& depth, float cx, float cy);
+
+  // --- Safety / HITL fault testing ---
+  FaultInjector* fault_injector_ = nullptr;
+  double frame_timestamp_ = 0.0;  // guarded by frame_mutex_
+  double depth_value_ = -1.0;     // guarded by depth_mutex_, metres at frame centre
 };
