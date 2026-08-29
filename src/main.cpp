@@ -6,9 +6,13 @@
 #include "system_mode.h"
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <netinet/in.h>
 #include <random>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <thread>
 #include <vector>
 
@@ -59,6 +63,44 @@ FaultScenario ScenarioFor(FaultCode code) {
   return scenario;
 }
 
+// --- GUI link (main.cpp is the TCP server, gui.py is the client) ---
+// Port gui.py connects to; keep in sync with MAIN_PROCESS_PORT in gui.py.
+constexpr int kGuiStatusPort = 8765;
+constexpr int kGuiConnectTimeoutSec = 1;
+
+// Checks once, at startup, whether the GUI is already trying to connect.
+// Doesn't block indefinitely — waits up to kGuiConnectTimeoutSec, then
+// gives up so the arm can run standalone with no GUI attached.
+// Returns the connected client socket, or -1 if nothing showed up.
+int TryAcceptGuiClient(int server_fd) {
+  fd_set read_fds;
+  FD_ZERO(&read_fds);
+  FD_SET(server_fd, &read_fds);
+  timeval timeout{kGuiConnectTimeoutSec, 0};
+
+  int ready = select(server_fd + 1, &read_fds, nullptr, nullptr, &timeout);
+  if (ready <= 0) return -1;
+  return accept(server_fd, nullptr, nullptr);
+}
+
+// Non-blocking check for a command from the GUI (e.g. its E-STOP button).
+// Safe to call every control loop iteration — MSG_DONTWAIT means it never
+// stalls the loop waiting on the socket. Returns true if an E-STOP was
+// requested. If the GUI disconnects (cleanly or otherwise), closes the
+// socket and clears *client_connected so we stop polling a dead fd.
+bool CheckGuiEStop(int client_fd, bool* client_connected) {
+  char buffer[64];
+  ssize_t n = recv(client_fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+  if (n > 0) {
+    return std::string(buffer, static_cast<size_t>(n)).find("ESTOP") != std::string::npos;
+  }
+  if (n == 0 || (errno != EWOULDBLOCK && errno != EAGAIN)) {
+    close(client_fd);
+    *client_connected = false;
+  }
+  return false;
+}
+
 int main(int argc, char** argv) {
   bool fault_test_requested = false;
   for (int i = 1; i < argc; i++) {
@@ -66,6 +108,25 @@ int main(int argc, char** argv) {
       fault_test_requested = true;
     }
   }
+
+  // One-time check at startup: is the GUI (gui.py) already up and trying
+  // to connect? main.cpp is the TCP server, gui.py is the client.
+  int gui_server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  int reuse_addr = 1;
+  setsockopt(gui_server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+
+  sockaddr_in gui_addr{};
+  gui_addr.sin_family = AF_INET;
+  gui_addr.sin_addr.s_addr = INADDR_ANY;
+  gui_addr.sin_port = htons(kGuiStatusPort);
+  bind(gui_server_fd, reinterpret_cast<sockaddr*>(&gui_addr), sizeof(gui_addr));
+  listen(gui_server_fd, 1);
+
+  std::cout << "Checking for GUI on port " << kGuiStatusPort << "..." << std::endl;
+  int gui_client_fd = TryAcceptGuiClient(gui_server_fd);
+  bool gui_connected = gui_client_fd != -1;
+  std::cout << (gui_connected ? "GUI connected." : "No GUI detected — continuing without it.") << std::endl;
+  close(gui_server_fd);  // one-shot check; not accepting further clients
 
   // Always start clean — the scripted HITL sequence below (if requested)
   // switches to kFaultTest itself once the normal-operation warm-up ends.
@@ -119,6 +180,7 @@ int main(int argc, char** argv) {
       std::cout << "\nShutting down — moving arm to home position..." << std::endl;
       arm.NonBlockingState(true);
       arm.Write("cartesian", 0.0, -50.0, 50, 2);
+      if (gui_connected) close(gui_client_fd);
       break;
     }
 
@@ -180,6 +242,16 @@ int main(int argc, char** argv) {
       }
     } else {
       was_faulted = false;
+    }
+
+    if (gui_connected) {
+      if (CheckGuiEStop(gui_client_fd, &gui_connected)) {
+        std::cout << "\nE-STOP received from GUI — shutting down." << std::endl;
+        g_shutdown_requested = true;
+      }
+      // TODO: send a status update to the GUI over gui_client_fd each
+      // cycle, e.g. current arm position, active fault, target coords.
+      // send(gui_client_fd, ..., ..., 0);
     }
 
     if (freeze) {

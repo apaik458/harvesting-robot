@@ -6,6 +6,7 @@ This is a research project undertaken at the University of Auckland CARES roboti
 The current research aims are to develop a robotic system for autonomous crop harvesting in narrow environments - think indoor/vertical farms, with many layers of shelves, with narrow corridors between them. See Figure 1 to illustrate this. Crops grown in these environments include leafy greens, herbs, and fruits. The current prototype is designed specifically for strawberry harvesting, although its functionality could be extended for other products as well.
 
 ![Figure 1: Vertical farm for strawberries](docs/farm.jpg)
+
 **Figure 1: Vertical farm for strawberries**
 
 In order to navigate these environments, a gantry system will be used with extendable rails, capable of translating the manipulator/end-effector across a 2D plane (the corridor in between shelves). The manipulator itself can move within a 2D plane, covering one of the dimensions that the gantry system alone cannot access, allowing this system to harvest crops in 3 dimensions. A crop-harvesting solution like this is proposed, rather than a typical mobile autonomous robot, as it is thought to be viable for different sized indoor farm environments. This solution to this problem is largely unexplored, as vertical farming is a relatively new technological development.
