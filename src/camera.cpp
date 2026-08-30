@@ -1,11 +1,12 @@
 #include "camera.h"
 
 Camera::Camera() {
-  // aruco setup - new API
+  // Aruco setup
   aruco_dict_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_50);
   aruco_params_ = cv::aruco::DetectorParameters();
   aruco_detector_ = cv::aruco::ArucoDetector(aruco_dict_, aruco_params_);
 
+  // Values obtained through calibrate.py script
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
       603.5139681293208, 0.0, 322.4871143178484,
       0.0, 606.2351953521359, 238.09114115221269,
@@ -14,7 +15,7 @@ Camera::Camera() {
       -0.005862800130731961, 1.193475628221078,
       0.0006140022848452339, -0.0003950816468824019, -4.37080936712476);
 
-  // load yolo onnx model
+  // Load yolo onnx model
   char exe_path[1024];
   ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
   exe_path[len] = '\0';
@@ -30,6 +31,10 @@ Camera::Camera() {
   }
 }
 
+void Camera::SetFaultInjector(FaultInjector* injector) {
+  fault_injector_ = injector;
+}
+
 Camera::~Camera() {
   if (is_open_) {
     is_open_ = false;
@@ -37,9 +42,8 @@ Camera::~Camera() {
     rs_pipeline_.stop();
   }
 }
-
+// Starts camera and spawns a thread to stream camera data
 bool Camera::Open(int device_id) {
-  // start realsense pipeline with colour and depth streams
   rs2::config cfg;
   cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
   cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
@@ -84,7 +88,7 @@ bool Camera::Open(int device_id) {
       // fault check is added back.
       double raw_depth = depth_frame.get_distance(color_frame.get_width() / 2, color_frame.get_height() / 2);
 
-      // store latest frame and depth
+      // Store latest frame and depth
       {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         latest_frame_ = frame.clone();
@@ -96,7 +100,7 @@ bool Camera::Open(int device_id) {
         depth_value_ = raw_depth;
       }
 
-      // draw aruco markers
+      // Draw aruco markers
       std::vector<std::vector<cv::Point2f>> corners;
       std::vector<int> ids;
       std::vector<std::vector<cv::Point2f>> rejected;
@@ -105,16 +109,16 @@ bool Camera::Open(int device_id) {
         cv::aruco::drawDetectedMarkers(frame, corners, ids);
       }
 
-      // draw latest yolo detections
+      // Draw latest yolo detections
       cv::Mat display = frame.clone();
       {
         std::lock_guard<std::mutex> lock(detections_mutex_);
         for (auto& det : latest_detections_) {
-          cv::Scalar colour = (det.class_id == kClassStrawberry)
+          cv::Scalar colour = (det.class_id == ClassStrawberry)
               ? cv::Scalar(0, 0, 255)
               : cv::Scalar(0, 255, 0);
           cv::rectangle(display, cv::Point(det.x1, det.y1), cv::Point(det.x2, det.y2), colour, 2);
-          std::string label = std::string(det.class_id == kClassStrawberry ? "strawberry" : "stem")
+          std::string label = std::string(det.class_id == ClassStrawberry ? "strawberry" : "stem")
               + " " + std::to_string((int)(det.confidence * 100)) + "%";
           cv::putText(display, label, cv::Point(det.x1, det.y1 - 5),
               cv::FONT_HERSHEY_SIMPLEX, 0.5, colour, 1);
@@ -140,8 +144,7 @@ bool Camera::Open(int device_id) {
   return true;
 }
 
-// ─── ArUco ───────────────────────────────────────────────────────────────────
-
+// For Aruco detection + tracking
 std::tuple<double, double, double> Camera::GetMarkerPosition() {
   if (!is_open_) {
     std::cerr << "Error: camera not opened. Call Open() first." << std::endl;
@@ -160,19 +163,17 @@ std::tuple<double, double, double> Camera::GetMarkerPosition() {
     std::vector<int> ids;
     std::vector<std::vector<cv::Point2f>> rejected;
 
-    // new API - use detector object
     aruco_detector_.detectMarkers(frame, corners, ids, rejected);
 
     if (!ids.empty()) {
-      // new API - estimatePoseSingleMarkers is replaced
       std::vector<cv::Vec3d> rvecs(ids.size()), tvecs(ids.size());
       for (size_t i = 0; i < ids.size(); i++) {
         cv::solvePnP(
             std::vector<cv::Point3f>{
-                {-kMarkerSizeCm / 2,  kMarkerSizeCm / 2, 0},
-                { kMarkerSizeCm / 2,  kMarkerSizeCm / 2, 0},
-                { kMarkerSizeCm / 2, -kMarkerSizeCm / 2, 0},
-                {-kMarkerSizeCm / 2, -kMarkerSizeCm / 2, 0}
+                {-MarkerSizeCm / 2,  MarkerSizeCm / 2, 0},
+                { MarkerSizeCm / 2,  MarkerSizeCm / 2, 0},
+                { MarkerSizeCm / 2, -MarkerSizeCm / 2, 0},
+                {-MarkerSizeCm / 2, -MarkerSizeCm / 2, 0}
             },
             corners[i],
             camera_matrix_,
@@ -186,8 +187,6 @@ std::tuple<double, double, double> Camera::GetMarkerPosition() {
   }
   return result;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 float Camera::GetMedianDepth(const rs2::depth_frame& depth, float x1, float y1, float x2, float y2) {
   float shrink_x = (x2 - x1) * 0.25f;
@@ -227,17 +226,16 @@ std::tuple<double, double, double> Camera::DeprojectToWorld(const rs2::depth_fra
   return {point[0] * 100.0, -point[1] * 100.0, point[2] * 100.0};
 }
 
-// ─── YOLO inference helper ────────────────────────────────────────────────────
-
+// Yolo inference helper
 std::vector<Detection> Camera::RunYolo(const cv::Mat& frame) {
   std::vector<Detection> detections;
 
-  float scale_x = (float)frame.cols / kYoloInputSize;
-  float scale_y = (float)frame.rows / kYoloInputSize;
+  float scale_x = (float)frame.cols / YoloInputSize;
+  float scale_y = (float)frame.rows / YoloInputSize;
 
   cv::Mat blob = cv::dnn::blobFromImage(
       frame, 1.0 / 255.0,
-      cv::Size(kYoloInputSize, kYoloInputSize),
+      cv::Size(YoloInputSize, YoloInputSize),
       cv::Scalar(), true, false
   );
 
@@ -262,13 +260,13 @@ std::vector<Detection> Camera::RunYolo(const cv::Mat& frame) {
     int class_id;
     if (conf_strawberry > conf_stem) {
       confidence = conf_strawberry;
-      class_id = kClassStrawberry;
+      class_id = ClassStrawberry;
     } else {
       confidence = conf_stem;
-      class_id = kClassStem;
+      class_id = ClassStem;
     }
 
-    if (confidence < kConfThreshold) continue;
+    if (confidence < ConfThreshold) continue;
 
     Detection d;
     d.x1 = (cx - w / 2) * scale_x;
@@ -283,8 +281,7 @@ std::vector<Detection> Camera::RunYolo(const cv::Mat& frame) {
   return detections;
 }
 
-// ─── Strawberry position ──────────────────────────────────────────────────────
-
+// Obtaining strawberry position
 std::tuple<double, double, double> Camera::GetStrawberryPosition() {
   if (!is_open_) {
     std::cerr << "Error: camera not opened. Call Open() first." << std::endl;
@@ -311,7 +308,7 @@ std::tuple<double, double, double> Camera::GetStrawberryPosition() {
   }
 
   for (auto& det : detections) {
-    if (det.class_id != kClassStrawberry) continue;
+    if (det.class_id != ClassStrawberry) continue;
 
     float cx = (det.x1 + det.x2) / 2;
     float cy = (det.y1 + det.y2) / 2;
@@ -325,10 +322,8 @@ std::tuple<double, double, double> Camera::GetStrawberryPosition() {
   return {-1, -1, -1};
 }
 
-// ─── Safety / HITL fault testing ──────────────────────────────────────────────
-
 bool Camera::IsConnected() const {
-  bool disconnected = fault_injector_ && fault_injector_->IsBlocked(FaultCode::kCameraDisconnected);
+  bool disconnected = fault_injector_ && fault_injector_->IsBlocked(FaultCode::CameraDisconnected);
   return is_open_ && !disconnected;
 }
 
@@ -347,8 +342,7 @@ bool Camera::IsDetectionValid() const {
   return !latest_detections_.empty();
 }
 
-// ─── Stem position ────────────────────────────────────────────────────────────
-
+// Getting stem position instead of strawberry position (not currently in use)
 std::tuple<double, double, double> Camera::GetStemPosition() {
   if (!is_open_) {
     std::cerr << "Error: camera not opened. Call Open() first." << std::endl;
@@ -371,7 +365,7 @@ std::tuple<double, double, double> Camera::GetStemPosition() {
   auto detections = RunYolo(frame);
 
   for (auto& det : detections) {
-    if (det.class_id != kClassStem) continue;
+    if (det.class_id != ClassStem) continue;
 
     float cx = (det.x1 + det.x2) / 2;
     float cy = (det.y1 + det.y2) / 2;

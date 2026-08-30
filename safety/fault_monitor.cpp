@@ -1,24 +1,21 @@
-// fault_monitor.cpp
 #include "fault_monitor.h"
 #include "arm.h"
 #include "camera.h"
 
-FaultCode FaultMonitor::Update(const Arm& arm, const Camera& camera, double loop_dt) {
-  // Priority order: actuator faults outrank perception faults —
-  // a runaway/disconnected servo is more urgent than a lost detection.
-  if (CheckServoDisconnected(arm))     return FaultCode::kServoDisconnected;
-  if (CheckExcessiveTorque(arm))       return FaultCode::kExcessiveTorque;
-  if (CheckCameraDisconnected(camera)) return FaultCode::kCameraDisconnected;
+FaultCode FaultMonitor::Update(const Arm& arm, const Camera& camera) {
+  if (CheckServoDisconnected(arm))     return FaultCode::ServoDisconnected;
+  if (CheckExcessiveTorque(arm))       return FaultCode::ExcessiveTorque;
+  if (CheckCameraDisconnected(camera)) return FaultCode::CameraDisconnected;
 
-  return FaultCode::kNone;
+  return FaultCode::None;
 }
 
 bool FaultMonitor::CheckServoDisconnected(const Arm& arm) const {
-  return !arm.IsConnected();  // assumes Arm exposes a connection status
+  return !arm.IsConnected();
 }
 
 bool FaultMonitor::CheckExcessiveTorque(const Arm& arm) const {
-  return arm.GetTorque() > kMaxTorque;
+  return arm.GetMaxTorque() > MaxTorque;
 }
 
 bool FaultMonitor::CheckCameraDisconnected(const Camera& camera) const {

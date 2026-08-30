@@ -10,9 +10,6 @@ Arm::Arm(const char* port)
       motor1_current_position_(2048),
       motor2_current_position_(2048),
       motor3_current_position_(2048),
-      target_position1_(2048),
-      target_position2_(2048),
-      target_position3_(2048),
       max_velocity_(50),
       max_acceleration_(0),
       non_blocking_(false),
@@ -24,10 +21,37 @@ Arm::Arm(const char* port)
       dxl_addparam_result_(false),
       dxl_getdata_result_(false),
       waypoints_number_(3),
-      large_movement_threshold_(20)
+      large_movement_threshold_(20),
+      fault_injector_(nullptr),
+      connected_(false),
+      torque_(0.0),
+      motor_connected_{false, false, false},
+      motor_torque_{0.0, 0.0, 0.0},
+      torque_constant_Nm_per_amp(1.65)  // a reasoned approximation from datasheet for MX-106
 {
 }
 
+void Arm::SetFaultInjector(FaultInjector* injector) {
+  fault_injector_ = injector;
+}
+
+bool Arm::IsConnected() const {
+  return connected_;
+}
+
+double Arm::GetMaxTorque() const {
+  return torque_;
+}
+
+std::tuple<bool, bool, bool> Arm::GetMotorConnections() const {
+  return std::make_tuple(motor_connected_[0], motor_connected_[1], motor_connected_[2]);
+}
+
+std::tuple<double, double, double> Arm::GetMotorTorques() const {
+  return std::make_tuple(motor_torque_[0], motor_torque_[1], motor_torque_[2]);
+}
+
+// Establishing connection to servo motors
 void Arm::Connect() {
   if (port_handler_->openPort()) {
     std::cout << "Succeeded to open the port!\n";
@@ -76,71 +100,62 @@ void Arm::Connect() {
   motor1_current_position_ = std::get<0>(positions);
   motor2_current_position_ = std::get<1>(positions);
   motor3_current_position_ = std::get<2>(positions);
-  target_position1_ = motor1_current_position_;
-  target_position2_ = motor2_current_position_;
-  target_position3_ = motor3_current_position_;
   connected_ = true;
 }
 
+// Gathers data from servo motors: connection statuses and torques
 void Arm::PollSafetyTelemetry() {
-  // Raw hardware read point: position feedback. Motor1 (shoulder) is used
-  // as the single representative joint. Not consumed by FaultMonitor yet —
-  // kept cached here for when position-based fault checks are added back.
-  uint32_t raw_position;
-  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id1_, kPresentPositionAddress, &raw_position, &dxl_error_);
-  bool comm_ok = (dxl_comm_result_ == COMM_SUCCESS) && (dxl_error_ == 0);
-
-  bool disconnected = fault_injector_ && fault_injector_->IsBlocked(FaultCode::kServoDisconnected);
-  connected_ = comm_ok && !disconnected;
-
-  if (comm_ok) {
-    motor1_current_position_ = raw_position;
-    position_deg_ = ((double(raw_position) - 2048.0) / 4096.0) * 360.0;
-  }
-
-  // Raw hardware read point: present current on each motor, converted to
-  // an approximate torque reading via the motor's torque constant. Any
-  // one motor reporting high current is enough to flag excessive torque,
-  // so we report the max across all three.
+  bool all_comm_ok = true;
   double max_torque_nm = 0.0;
-  for (uint8_t motor_id : {dxl_id1_, dxl_id2_, dxl_id3_}) {
+  uint8_t motor_ids[3] = {dxl_id1_, dxl_id2_, dxl_id3_};
+
+  for (int i = 0; i < 3; i++) {
+    uint8_t motor_id = motor_ids[i];
+
+    // Ensuring this motor is connected
+    uint32_t raw_position;
+    dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, motor_id, PresentPositionAddress, &raw_position, &dxl_error_);
+    bool position_comm_ok = (dxl_comm_result_ == COMM_SUCCESS) && (dxl_error_ == 0);
+    all_comm_ok = all_comm_ok && position_comm_ok;
+    motor_connected_[i] = position_comm_ok;
+
+    // Reading this motor's torque
     uint16_t raw_current;
-    dxl_comm_result_ = packet_handler_->read2ByteTxRx(port_handler_, motor_id, kPresentCurrentAddress, &raw_current, &dxl_error_);
+    dxl_comm_result_ = packet_handler_->read2ByteTxRx(port_handler_, motor_id, PresentCurrentAddress, &raw_current, &dxl_error_);
     if (dxl_comm_result_ != COMM_SUCCESS || dxl_error_ != 0) continue;
 
     int16_t signed_current_ma = static_cast<int16_t>(raw_current);
     double current_amps = std::abs(signed_current_ma) / 1000.0;
     if (fault_injector_) {
-      current_amps = fault_injector_->ApplyToValue(current_amps, FaultCode::kExcessiveTorque);
+      current_amps = fault_injector_->ApplyToValue(current_amps, FaultCode::ExcessiveTorque);
     }
-    max_torque_nm = std::max(max_torque_nm, current_amps * kTorqueConstantNmPerAmp);
+    double torque_nm = current_amps * torque_constant_Nm_per_amp;
+    motor_torque_[i] = torque_nm;
+    max_torque_nm = std::max(max_torque_nm, torque_nm);
   }
-  torque_ = max_torque_nm;
-}
 
-bool Arm::IsCommandingMotion() const {
-  return abs(target_position1_ - motor1_current_position_) > move_accuracy_threshold_ ||
-         abs(target_position2_ - motor2_current_position_) > move_accuracy_threshold_ ||
-         abs(target_position3_ - motor3_current_position_) > move_accuracy_threshold_;
+  bool disconnected = fault_injector_ && fault_injector_->IsBlocked(FaultCode::ServoDisconnected);
+  connected_ = all_comm_ok && !disconnected;
+  torque_ = max_torque_nm;
 }
 
 std::tuple<int, int, int> Arm::Read() {
   uint32_t present_position1;
   uint32_t present_position2;
   uint32_t present_position3;
-  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id1_, kPresentPositionAddress, &present_position1, &dxl_error_);
+  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id1_, PresentPositionAddress, &present_position1, &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
     std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
   }
-  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id2_, kPresentPositionAddress, &present_position2, &dxl_error_);
+  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id2_, PresentPositionAddress, &present_position2, &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
     std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
   }
-  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id3_, kPresentPositionAddress, &present_position3, &dxl_error_);
+  dxl_comm_result_ = packet_handler_->read4ByteTxRx(port_handler_, dxl_id3_, PresentPositionAddress, &present_position3, &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
@@ -154,10 +169,6 @@ std::tuple<int, int, int> Arm::Read() {
 }
 
 void Arm::Write(int target_position1, int target_position2, int target_position3) {
-  target_position1_ = target_position1;
-  target_position2_ = target_position2;
-  target_position3_ = target_position3;
-
   // Determine what speed is required for each motor to reach the target position at the same time
   std::tuple<double, double, double> speeds = CalculateSpeeds(target_position1, target_position2, target_position3);
   double speed1 = std::get<0>(speeds);
@@ -166,30 +177,30 @@ void Arm::Write(int target_position1, int target_position2, int target_position3
 
   std::cout << "speeds: " << speed1 << ", " << speed2 << ", " << speed3 << std::endl;
 
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kProfileVelocityAddress, speed1, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kProfileVelocityAddress, speed2, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kProfileVelocityAddress, speed3, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, ProfileVelocityAddress, speed1, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, ProfileVelocityAddress, speed2, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, ProfileVelocityAddress, speed3, &dxl_error_);
 
   // to control motor acceleration (for trapezoidal velocity profile)
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kProfileAccelerationAddress, max_acceleration_, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kProfileAccelerationAddress, max_acceleration_, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kProfileAccelerationAddress, max_acceleration_, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, ProfileAccelerationAddress, max_acceleration_, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, ProfileAccelerationAddress, max_acceleration_, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, ProfileAccelerationAddress, max_acceleration_, &dxl_error_);
 
-  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kGoalPositionAddress, uint32_t(target_position1), &dxl_error_);
+  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, GoalPositionAddress, uint32_t(target_position1), &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
     std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
   }
 
-  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kGoalPositionAddress, uint32_t(target_position2), &dxl_error_);
+  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, GoalPositionAddress, uint32_t(target_position2), &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
     std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
   }
 
-  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kGoalPositionAddress, uint32_t(target_position3), &dxl_error_);
+  dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, GoalPositionAddress, uint32_t(target_position3), &dxl_error_);
   if (dxl_comm_result_ != COMM_SUCCESS) {
     std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
   } else if (dxl_error_ != 0) {
@@ -210,10 +221,6 @@ void Arm::Write(int target_position1, int target_position2, int target_position3
 
 // Blocking arm movement used only for large movements so arm can move in a straight line without overextending
 void Arm::WriteWaypoints(int target_position1, int target_position2, int target_position3, double target_x, double target_y) {
-  target_position1_ = target_position1;
-  target_position2_ = target_position2;
-  target_position3_ = target_position3;
-
   int present_position1, present_position2, present_position3;
   std::tuple<int, int, int> positions = Read();
   present_position1 = std::get<0>(positions);
@@ -248,9 +255,9 @@ void Arm::WriteWaypoints(int target_position1, int target_position2, int target_
   double speed2 = std::get<1>(speeds);
   double speed3 = std::get<2>(speeds);
   std::cout << "speeds: " << speed1 << ", " << speed2 << ", " << speed3 << std::endl;
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kProfileVelocityAddress, speed1, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kProfileVelocityAddress, speed2, &dxl_error_);
-  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kProfileVelocityAddress, speed3, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, ProfileVelocityAddress, speed1, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, ProfileVelocityAddress, speed2, &dxl_error_);
+  packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, ProfileVelocityAddress, speed3, &dxl_error_);
 
   // 4. Iterate through each waypoint
   int total_waypoints = waypoints1.size();
@@ -260,23 +267,23 @@ void Arm::WriteWaypoints(int target_position1, int target_position2, int target_
     // uint32_t accel = (is_first || is_last) ? max_acceleration_ : 0;
 
     uint32_t accel = max_acceleration_;
-    packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kProfileAccelerationAddress, accel, &dxl_error_);
-    packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kProfileAccelerationAddress, accel, &dxl_error_);
-    packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kProfileAccelerationAddress, accel, &dxl_error_);
+    packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, ProfileAccelerationAddress, accel, &dxl_error_);
+    packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, ProfileAccelerationAddress, accel, &dxl_error_);
+    packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, ProfileAccelerationAddress, accel, &dxl_error_);
 
-    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, kGoalPositionAddress, uint32_t(waypoints1[idx]), &dxl_error_);
+    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id1_, GoalPositionAddress, uint32_t(waypoints1[idx]), &dxl_error_);
     if (dxl_comm_result_ != COMM_SUCCESS) {
       std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
     } else if (dxl_error_ != 0) {
       std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
     }
-    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, kGoalPositionAddress, uint32_t(waypoints2[idx]), &dxl_error_);
+    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id2_, GoalPositionAddress, uint32_t(waypoints2[idx]), &dxl_error_);
     if (dxl_comm_result_ != COMM_SUCCESS) {
       std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
     } else if (dxl_error_ != 0) {
       std::cout << packet_handler_->getRxPacketError(dxl_error_) << std::endl;
     }
-    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, kGoalPositionAddress, uint32_t(waypoints3[idx]), &dxl_error_);
+    dxl_comm_result_ = packet_handler_->write4ByteTxRx(port_handler_, dxl_id3_, GoalPositionAddress, uint32_t(waypoints3[idx]), &dxl_error_);
     if (dxl_comm_result_ != COMM_SUCCESS) {
       std::cout << packet_handler_->getTxRxResult(dxl_comm_result_) << std::endl;
     } else if (dxl_error_ != 0) {
@@ -418,20 +425,20 @@ std::tuple<int, int, int> Arm::CalculateInverseKinematics(double x, double y) {
   double distance_from_origin = sqrt(x * x + y * y);
 
   // Elbow angle (motor 2): apply cosine rule
-  double elbow_angle = M_PI - acos((kLink1LengthCm * kLink1LengthCm + kLink2LengthCm * kLink2LengthCm - distance_from_origin * distance_from_origin) / (2 * kLink1LengthCm * kLink2LengthCm));
+  double elbow_angle = M_PI - acos((Link1LengthCm * Link1LengthCm + Link2LengthCm * Link2LengthCm - distance_from_origin * distance_from_origin) / (2 * Link1LengthCm * Link2LengthCm));
   if (x < 0) {
     elbow_angle = -elbow_angle;  // Ensures CW elbow rotation if target is in the left half plane
   }
 
   // Shoulder angle (motor 1):
   // Step 1: first finding elbow joint coordinate - this logic required a long hand calculation
-  double K = -kLink1LengthCm * kLink1LengthCm - x * x - y * y + kLink2LengthCm * kLink2LengthCm;
+  double K = -Link1LengthCm * Link1LengthCm - x * x - y * y + Link2LengthCm * Link2LengthCm;
 
   std::cout << "K value: " << K << std::endl;
 
   double a = 4 * x * x + 4 * y * y;
   double b = 4 * y * K;
-  double c = K * K - 4 * x * x * kLink1LengthCm * kLink1LengthCm;
+  double c = K * K - 4 * x * x * Link1LengthCm * Link1LengthCm;
 
   std::cout << "Quadratic coefficients: a=" << a << ", b=" << b << ", c=" << c << std::endl;
 
@@ -444,13 +451,13 @@ std::tuple<int, int, int> Arm::CalculateInverseKinematics(double x, double y) {
 
   std::cout << "Elbow Y candidates: " << elbow_y1 << ", " << elbow_y2 << std::endl;
 
-  double elbow_x_pos = sqrt(kLink1LengthCm * kLink1LengthCm - elbow_y * elbow_y);
+  double elbow_x_pos = sqrt(Link1LengthCm * Link1LengthCm - elbow_y * elbow_y);
   double elbow_x_neg = -elbow_x_pos;
 
   std::cout << "Elbow X candidates: " << elbow_x_pos << ", " << elbow_x_neg << std::endl;
 
-  double err_pos = pow(elbow_x_pos - x, 2) + pow(elbow_y - y, 2) - kLink2LengthCm * kLink2LengthCm;
-  double err_neg = pow(elbow_x_neg - x, 2) + pow(elbow_y - y, 2) - kLink2LengthCm * kLink2LengthCm;
+  double err_pos = pow(elbow_x_pos - x, 2) + pow(elbow_y - y, 2) - Link2LengthCm * Link2LengthCm;
+  double err_neg = pow(elbow_x_neg - x, 2) + pow(elbow_y - y, 2) - Link2LengthCm * Link2LengthCm;
 
   std::cout << "Error for positive elbow x: " << err_pos << ", Error for negative elbow x: " << err_neg << std::endl;
 
@@ -496,16 +503,16 @@ std::tuple<double, double> Arm::CalculateForwardKinematics(int motor1_position, 
   double link1_angle = shoulder_angle - M_PI / 2.0;
 
   // Elbow joint position (end of link1)
-  double elbow_x = kLink1LengthCm * cos(link1_angle);
-  double elbow_y = kLink1LengthCm * sin(link1_angle);
+  double elbow_x = Link1LengthCm * cos(link1_angle);
+  double elbow_y = Link1LengthCm * sin(link1_angle);
 
   // Elbow angle was stored as pi - acos(...), and negated for x<0
   // link2 direction = link1_angle + elbow_angle (chained joints)
   double link2_angle = link1_angle + elbow_angle;
 
   // End effector position (end of link2)
-  double x = elbow_x + kLink2LengthCm * cos(link2_angle);
-  double y = elbow_y + kLink2LengthCm * sin(link2_angle);
+  double x = elbow_x + Link2LengthCm * cos(link2_angle);
+  double y = elbow_y + Link2LengthCm * sin(link2_angle);
 
   std::cout << "FK result: x=" << x << ", y=" << y << std::endl;
 

@@ -9,16 +9,19 @@
 #include "dynamixel_sdk/dynamixel_sdk.h"
 #include "fault_injector.h"
 
-constexpr uint16_t kPositionPGainAddress = 84;
-constexpr uint16_t kProfileAccelerationAddress = 108;
-constexpr uint16_t kProfileVelocityAddress = 112;
-constexpr uint16_t kGoalPositionAddress = 116;
-constexpr uint16_t kPresentPositionAddress = 132;
-constexpr uint16_t kPresentCurrentAddress = 126;
-constexpr int kDataLength4Byte = 4;
-constexpr double kLink1LengthCm = 27.65;
-constexpr double kLink2LengthCm = 22.35;
-constexpr double kEndEffectorLength = 7.0;
+// Parameters from Dynamixel datasheet
+constexpr uint16_t PositionPGainAddress = 84;
+constexpr uint16_t ProfileAccelerationAddress = 108;
+constexpr uint16_t ProfileVelocityAddress = 112;
+constexpr uint16_t GoalPositionAddress = 116;
+constexpr uint16_t PresentPositionAddress = 132;
+constexpr uint16_t PresentCurrentAddress = 126;
+constexpr int DataLength4Byte = 4;
+
+// Physical attributes of the robot
+constexpr double Link1LengthCm = 27.65;
+constexpr double Link2LengthCm = 22.35;
+constexpr double EndEffectorLength = 7.0;
 
 class Arm {
  public:
@@ -30,29 +33,18 @@ class Arm {
   void Write(std::string command, double x, double y, int velocity);
   void Write(std::string command, double x, double y);
   void WriteWaypoints(int target_position1, int target_position2, int target_position3, double target_x, double target_y);
+  void NonBlockingState(bool block);
+  void SetFaultInjector(FaultInjector* injector);
+  void PollSafetyTelemetry();
+  bool IsConnected() const;
+  double GetMaxTorque() const;
+  std::tuple<bool, bool, bool> GetMotorConnections() const;
+  std::tuple<double, double, double> GetMotorTorques() const;
 
   // Helper functions
   std::tuple<double, double, double> CalculateSpeeds(int target_position1, int target_position2, int target_position3);
   std::tuple<int, int, int> CalculateInverseKinematics(double x, double y);
   std::tuple<double, double> CalculateForwardKinematics(int motor1_position, int motor2_position, int motor3_position);
-  void NonBlockingState(bool block);
-
-  // --- Safety / HITL fault testing ---
-  // Injects fault scenarios at Arm's raw hardware read points. Pass
-  // nullptr (the default) to run with no injection, i.e. normal operation.
-  void SetFaultInjector(FaultInjector* injector) { fault_injector_ = injector; }
-
-  // Refreshes the safety-monitoring state (connection status, position,
-  // torque) from the hardware. Independent of Read(), which is reserved
-  // for motion control, so calling this at monitor rate doesn't add
-  // comms traffic to the motion-control hot path. Call once per control
-  // loop iteration before consulting FaultMonitor.
-  void PollSafetyTelemetry();
-
-  bool IsConnected() const { return connected_; }
-  double GetTorque() const { return torque_; }         // Nm, approximate — see PollSafetyTelemetry
-  double GetPosition() const { return position_deg_; }  // degrees, shoulder joint (motor1)
-  bool IsCommandingMotion() const;
 
  private:
   const char* port_;
@@ -67,10 +59,6 @@ class Arm {
   int motor1_current_position_;
   int motor2_current_position_;
   int motor3_current_position_;
-
-  int target_position1_;
-  int target_position2_;
-  int target_position3_;
 
   int max_velocity_;
   int max_acceleration_;
@@ -90,10 +78,10 @@ class Arm {
   int waypoints_number_;
   int large_movement_threshold_;
 
-  // --- Safety / HITL fault testing ---
-  FaultInjector* fault_injector_ = nullptr;
-  bool connected_ = false;
-  double torque_ = 0.0;
-  double position_deg_ = 0.0;
-  static constexpr double kTorqueConstantNmPerAmp = 1.65;  // a reasoned approximation from datasheet for MX-106
+  FaultInjector* fault_injector_;
+  bool connected_;
+  double torque_;
+  bool motor_connected_[3];
+  double motor_torque_[3];
+  double torque_constant_Nm_per_amp;  // a reasoned approximation from datasheet for MX-106
 };

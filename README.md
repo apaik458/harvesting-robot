@@ -42,11 +42,7 @@ Then, from the `build` directory:
 
 Runs the main continuous control loop, tracking and picking strawberries detected via the YOLOv5 pipeline.
 
-```bash
-./arm_control --fault-test
-```
-
-Runs the fault-injection test mode instead — a supplementary tool for development that verifies the arm fails safely when it should, e.g. servo torque/current too high, hardware disconnections, and similar fault conditions.
+Fault injection (servo torque/current too high, hardware disconnections, and similar fault conditions) is done live via the GUI rather than a CLI mode — see `./run.sh` from the repo root, which launches `arm_control` and `gui/gui.py` together.
 
 ## Directory Structure
 

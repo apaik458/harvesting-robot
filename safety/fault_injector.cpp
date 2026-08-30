@@ -1,56 +1,46 @@
-// fault_injector.cpp
 #include "fault_injector.h"
 
-void FaultInjector::SetMode(SystemMode mode) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  mode_ = mode;
-}
-
-SystemMode FaultInjector::GetMode() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return mode_;
-}
-
+// Sets an active fault
 void FaultInjector::SetScenario(const FaultScenario& scenario) {
   std::lock_guard<std::mutex> lock(mutex_);
-  active_scenario_ = scenario;
+  active_code_ = scenario.code;
+  active_magnitude_ = scenario.magnitude;
 }
 
+// Clears an active fault
 void FaultInjector::ClearScenario() {
   std::lock_guard<std::mutex> lock(mutex_);
-  active_scenario_.reset();
+  active_code_ = FaultCode::None;
+  active_magnitude_ = 0.0;
 }
 
-FaultCode FaultInjector::ActiveFault() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return active_scenario_ ? active_scenario_->code : FaultCode::kNone;
-}
-
+// Used to overwrite a hardware value with a simulated value, e.g. to simulate a large motor current
 double FaultInjector::ApplyToValue(double real_value, FaultCode fault_type) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (mode_ == SystemMode::kNormal || !active_scenario_ || active_scenario_->code != fault_type) {
+  if (active_code_ != fault_type) {
     return real_value;
   }
 
   switch (fault_type) {
-    case FaultCode::kExcessiveTorque:
-      // Report a fixed high load regardless of actual load.
-      return active_scenario_->magnitude;
+    case FaultCode::ExcessiveTorque:
+      // Report a fixed high load regardless of actual load
+      return active_magnitude_;
 
     default:
       return real_value;
   }
 }
 
+// Used to simulate fault boolean conditions, e.g. to simulate servo disconnection
 bool FaultInjector::IsBlocked(FaultCode fault_type) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (mode_ == SystemMode::kNormal || !active_scenario_ || active_scenario_->code != fault_type) {
+  if (active_code_ != fault_type) {
     return false;
   }
 
   switch (fault_type) {
-    case FaultCode::kServoDisconnected:
-    case FaultCode::kCameraDisconnected:
+    case FaultCode::ServoDisconnected:
+    case FaultCode::CameraDisconnected:
       return true;
     default:
       return false;
