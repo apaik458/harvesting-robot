@@ -13,7 +13,7 @@
 #include <sys/socket.h>
 #include <thread>
 
-#define ExcessiveTorqueTestCurrentAmps 4.0 // the safe threshold for motor current
+#define ExcessiveTorqueTestCurrentAmps 3.0 // the safe threshold for motor current
 
 // Flag to handle shutdowns
 std::atomic<bool> g_shutdown_requested{false};

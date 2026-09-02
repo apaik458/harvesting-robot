@@ -5,6 +5,11 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout,
 
 STATUS_POLL_INTERVAL_MS = 200
 
+# Must match MaxTorque in safety/fault_monitor.h -- used only to mark a
+# motor's torque reading as [OVERLOAD] in the display, same threshold the
+# main process itself uses to decide whether to freeze.
+TORQUE_LIMIT_NM = 1.0
+
 # main.cpp is the TCP server, this GUI is the client
 MAIN_PROCESS_HOST = "127.0.0.1"
 MAIN_PROCESS_PORT = 8765
@@ -156,14 +161,19 @@ class MainWindow(QMainWindow):
         try:
             fields = dict(pair.split("=") for pair in line[len("STATUS:"):].split(","))
 
-            def status(key):
+            def conn_status(key):
                 return "OK" if fields[key] == "1" else "DISCONNECTED"
 
+            def motor_line(label, conn_key, torque_key):
+                torque = float(fields[torque_key])
+                overload = " [OVERLOAD]" if torque > TORQUE_LIMIT_NM else ""
+                return f"{label}: {torque:.2f} Nm [{conn_status(conn_key)}]{overload}"
+
             self.telemetry_label.setText(
-                f"Motor 1: {float(fields['t1']):.2f} Nm [{status('m1')}]\n"
-                f"Motor 2: {float(fields['t2']):.2f} Nm [{status('m2')}]\n"
-                f"Motor 3: {float(fields['t3']):.2f} Nm [{status('m3')}]\n"
-                f"Camera:  [{status('cam')}]"
+                motor_line("Motor 1", "m1", "t1") + "\n" +
+                motor_line("Motor 2", "m2", "t2") + "\n" +
+                motor_line("Motor 3", "m3", "t3") + "\n" +
+                f"Camera:  [{conn_status('cam')}]"
             )
         except (KeyError, ValueError):
             print(f"Malformed status line from main process: {line!r}")
